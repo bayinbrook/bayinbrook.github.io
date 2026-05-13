@@ -11,6 +11,7 @@
     <header>
       <h1>📝 留言板</h1>
       <p class="subtitle">留下你的足迹</p>
+      <button id="settingsBtn" class="btn-settings">⚙️ 设置</button>
     </header>
 
     <!-- 留言表单 -->
@@ -21,17 +22,17 @@
           <label for="username">昵称 *</label>
           <input type="text" id="username" name="username" placeholder="请输入昵称" required>
         </div>
-        
+
         <div class="form-group">
           <label for="email">邮箱 (可选)</label>
           <input type="email" id="email" name="email" placeholder="用于显示Gravatar头像">
         </div>
-        
+
         <div class="form-group">
           <label for="content">留言内容 *</label>
           <textarea id="content" name="content" placeholder="说点什么吧..." required rows="4"></textarea>
         </div>
-        
+
         <div class="form-group">
           <label for="images">上传图片 (可选，最多5张)</label>
           <div class="file-upload">
@@ -42,7 +43,7 @@
             <div id="previewContainer" class="preview-container"></div>
           </div>
         </div>
-        
+
         <button type="submit" id="submitBtn">
           <span class="btn-text">提交留言</span>
           <span class="btn-loading" style="display:none">提交中...</span>
@@ -56,16 +57,16 @@
         <h2>留言列表 <span id="messageCount">(0)</span></h2>
         <button id="refreshBtn" class="btn-refresh">🔄 刷新</button>
       </div>
-      
+
       <div id="loading" class="loading">
         <div class="spinner"></div>
         <span>加载中...</span>
       </div>
-      
+
       <div id="messagesList" class="messages-list">
         <!-- 留言将通过JS动态加载 -->
       </div>
-      
+
       <div id="pagination" class="pagination">
         <!-- 分页按钮将通过JS动态生成 -->
       </div>
@@ -74,6 +75,25 @@
 
   <!-- Toast 通知 -->
   <div id="toast" class="toast"></div>
+
+  <!-- Token 设置模态框 -->
+  <div id="tokenModal" class="modal">
+    <div class="modal-content">
+      <button class="close-btn" onclick="closeTokenModal()">×</button>
+      <h2>⚙️ 设置 GitHub Token</h2>
+      <p class="modal-hint">由于 GitHub 安全限制，Token 需要保存在本地浏览器中，不会上传到仓库。</p>
+      <div class="form-group">
+        <label for="githubToken">GitHub Personal Access Token</label>
+        <input type="password" id="githubToken" placeholder="ghp_xxxxxxxxxxxx">
+      </div>
+      <p class="token-hint">
+        创建 Token：<a href="https://github.com/settings/tokens/new?scopes=repo&description=Guestbook" target="_blank">点击创建</a><br>
+        需要勾选 <strong>repo</strong> 权限
+      </p>
+      <button id="saveTokenBtn" class="btn-save">保存 Token</button>
+      <button class="btn-cancel" onclick="closeTokenModal()">取消</button>
+    </div>
+  </div>
 
   <script src="config.js"></script>
   <script src="app.js"></script>
