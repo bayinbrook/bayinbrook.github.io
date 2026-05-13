@@ -1,19 +1,22 @@
 /**
  * GitHub 留言板 - 使用 GitHub Gist 存储
- * 无需 Token，留言存储在 GitHub Gist 中
+ * 优化版：使用 embed API + 留言索引 Gist 避免速率限制
  */
+
+const INDEX_GIST_ID = ''; // 留空自动创建
 
 class Guestbook {
   constructor() {
     this.messages = [];
     this.currentPage = 1;
     this.selectedFiles = [];
-    this.gistId = null; // 存储留言列表的 Gist ID
+    this.indexGistId = null; // 留言索引 Gist ID
 
     this.init();
   }
 
   async init() {
+    await this.loadIndex();
     await this.loadMessages();
     this.bindEvents();
   }
@@ -29,12 +32,10 @@ class Guestbook {
 
     try {
       const response = await fetch(url, { ...options, headers });
-
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.message || '请求失败');
       }
-
       return response.json();
     } catch (error) {
       console.error('GitHub Gist API Error:', error);
@@ -42,7 +43,53 @@ class Guestbook {
     }
   }
 
-  // 加载留言 - 使用 Gist Embed API 避免速率限制
+  // 加载留言索引
+  async loadIndex() {
+    try {
+      // 如果有保存的索引 ID，直接用 embed API 加载
+      const savedIndexId = localStorage.getItem('guestbook_index_id');
+      if (savedIndexId) {
+        const data = await fetch(`https://gist.github.com/${savedIndexId}.json`).then(r => r.json());
+        const index = JSON.parse(data.files[Object.keys(data.files)[0]].content);
+        this.indexGistId = savedIndexId;
+        this.messages = index.messages || [];
+        return;
+      }
+
+      // 没有索引？用 API 搜索一次，然后保存索引
+      const gists = await this.gistRequest('/users/bayinbrook/gists');
+      const messageGists = gists.filter(gist =>
+        gist.description && gist.description.startsWith('留言-')
+      );
+      
+      // 创建索引 Gist
+      const indexData = {
+        version: 1,
+        updated: new Date().toISOString(),
+        messages: messageGists.map(g => g.id)
+      };
+
+      const newGist = await this.gistRequest('/gists', {
+        method: 'POST',
+        body: JSON.stringify({
+          description: '留言板索引-勿删',
+          public: false, // 索引设为私有
+          files: {
+            'index.json': { content: JSON.stringify(indexData, null, 2) }
+          }
+        })
+      });
+
+      this.indexGistId = newGist.id;
+      localStorage.setItem('guestbook_index_id', newGist.id);
+      this.messages = messageGists.map(g => g.id);
+    } catch (error) {
+      console.warn('Index load failed:', error);
+      this.messages = [];
+    }
+  }
+
+  // 加载留言内容 - 使用 embed API
   async loadMessages() {
     const loadingEl = document.getElementById('loading');
     const messagesListEl = document.getElementById('messagesList');
@@ -51,27 +98,21 @@ class Guestbook {
     messagesListEl.innerHTML = '';
 
     try {
-      // 获取所有用户的公开 Gist
-      const gists = await this.gistRequest(`/users/${CONFIG.GIST_OWNER}/gists`);
+      if (this.messages.length === 0) {
+        this.renderMessages();
+        return;
+      }
 
-      // 过滤出留言 Gist（描述以 "留言-" 开头）
-      const messageGists = gists.filter(gist =>
-        gist.description && gist.description.startsWith('留言-')
-      );
-
-      // 加载每条留言的内容 - 使用 embed API 避免速率限制
-      this.messages = [];
-      const loadPromises = messageGists.map(gist => 
-        fetch(`https://gist.github.com/${gist.id}.json`)
+      // 使用 embed API 并行加载所有留言
+      const loadPromises = this.messages.map(gistId => 
+        fetch(`https://gist.github.com/${gistId}.json`)
           .then(res => res.json())
           .then(data => {
             const content = data.files[Object.keys(data.files)[0]].content;
-            const message = JSON.parse(content);
-            message.gistId = gist.id;
-            return message;
+            return JSON.parse(content);
           })
           .catch(e => {
-            console.warn('Failed to load gist:', gist.id, e);
+            console.warn('Failed to load:', gistId, e);
             return null;
           })
       );
@@ -82,12 +123,38 @@ class Guestbook {
       // 按时间倒序
       this.messages.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
+      // 更新索引
+      await this.updateIndex();
+
       this.renderMessages();
     } catch (error) {
-      this.showToast('加载留言失败: ' + error.message, 'error');
+      this.showToast('加载留言失败', 'error');
       messagesListEl.innerHTML = '<div class="empty-state"><div class="icon">😢</div><p>加载失败，请刷新重试</p></div>';
     } finally {
       loadingEl.style.display = 'none';
+    }
+  }
+
+  // 更新索引
+  async updateIndex() {
+    if (!this.indexGistId) return;
+    try {
+      await this.gistRequest(`/gists/${this.indexGistId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          files: {
+            'index.json': {
+              content: JSON.stringify({
+                version: 1,
+                updated: new Date().toISOString(),
+                messages: this.messages.map(m => m.gistId || m.id).filter(Boolean)
+              }, null, 2)
+            }
+          }
+        })
+      });
+    } catch (e) {
+      console.warn('Index update failed:', e);
     }
   }
 
@@ -101,13 +168,11 @@ class Guestbook {
     });
   }
 
-  // 创建留言 Gist
+  // 创建留言
   async addMessage(username, email, content) {
-    // 图片转为 base64
     const images = [];
     for (const file of this.selectedFiles) {
-      const base64 = await this.fileToBase64(file);
-      images.push(base64);
+      images.push(await this.fileToBase64(file));
     }
 
     const message = {
@@ -124,18 +189,16 @@ class Guestbook {
       body: JSON.stringify({
         description: `留言-${username}`,
         public: true,
-        files: {
-          'message.json': {
-            content: JSON.stringify(message, null, 2)
-          }
-        }
+        files: { 'message.json': { content: JSON.stringify(message, null, 2) } }
       })
     });
 
     message.gistId = gist.id;
 
-    // 添加到列表开头
+    // 添加到列表并更新索引
     this.messages.unshift(message);
+    await this.updateIndex();
+
     this.renderMessages();
     this.showToast('留言发表成功！', 'success');
   }
@@ -149,20 +212,15 @@ class Guestbook {
     messageCountEl.textContent = `(${this.messages.length})`;
 
     if (this.messages.length === 0) {
-      messagesListEl.innerHTML = `
-        <div class="empty-state">
-          <div class="icon">💬</div>
-          <p>还没有留言，快来发表第一条吧！</p>
-        </div>
-      `;
+      messagesListEl.innerHTML = `<div class="empty-state"><div class="icon">💬</div><p>还没有留言，快来发表第一条吧！</p></div>`;
       paginationEl.innerHTML = '';
       return;
     }
 
-    // 分页
-    const totalPages = Math.ceil(this.messages.length / CONFIG.PAGE_SIZE);
-    const start = (this.currentPage - 1) * CONFIG.PAGE_SIZE;
-    const end = start + CONFIG.PAGE_SIZE;
+    const PAGE_SIZE = 10;
+    const totalPages = Math.ceil(this.messages.length / PAGE_SIZE);
+    const start = (this.currentPage - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
     const pageMessages = this.messages.slice(start, end);
 
     messagesListEl.innerHTML = pageMessages.map(msg => this.renderMessageCard(msg)).join('');
@@ -185,7 +243,7 @@ class Guestbook {
             <div class="message-time">${time}</div>
           </div>
         </div>
-        <div class="message-content">${this.escapeHtml(msg.content)}</div>
+        <div class="message-content">${this.escapeHtml(msg.content).replace(/\n/g, '<br>')}</div>
         ${msg.images && msg.images.length > 0 ? `
           <div class="message-images">
             ${msg.images.map(img => `<img src="${img}" alt="留言图片" loading="lazy">`).join('')}
@@ -206,23 +264,15 @@ class Guestbook {
 
   // MD5
   md5(string) {
-    function rotateLeft(value, amount) {
-      return (value << amount) | (value >>> (32 - amount));
-    }
-    function addUnsigned(x, y) {
-      return (x + y) >>> 0;
-    }
+    function rotateLeft(value, amount) { return (value << amount) | (value >>> (32 - amount)); }
+    function addUnsigned(x, y) { return (x + y) >>> 0; }
     const utf8String = unescape(encodeURIComponent(string));
     const bytes = [];
-    for (let i = 0; i < utf8String.length; i++) {
-      bytes.push(utf8String.charCodeAt(i));
-    }
+    for (let i = 0; i < utf8String.length; i++) { bytes.push(utf8String.charCodeAt(i)); }
     let a = 1732584193, b = -271733879, c = -1732584194, d = 271733878;
     for (let k = 0; k < bytes.length; k += 64) {
       const x = new Array(16);
-      for (let i = 0; i < 16; i++) {
-        x[i] = bytes[k + i] || 0;
-      }
+      for (let i = 0; i < 16; i++) { x[i] = bytes[k + i] || 0; }
       a = addUnsigned(a, rotateLeft(addUnsigned(a, (b & c) | (~b & d)) + x[0] + 1518500249, 7));
       d = addUnsigned(d, rotateLeft(addUnsigned(d, (a & b) | (~a & c)) + x[1] + 1518500249, 12));
       c = addUnsigned(c, rotateLeft(addUnsigned(c, (d & a) | (~d & b)) + x[2] + 1518500249, 17));
@@ -231,9 +281,7 @@ class Guestbook {
     const hex = (n) => {
       const h = '0123456789abcdef';
       let s = '';
-      for (let i = 7; i >= 0; i--) {
-        s += h[(n >>> (i * 4)) & 0xf];
-      }
+      for (let i = 7; i >= 0; i--) { s += h[(n >>> (i * 4)) & 0xf]; }
       return s;
     };
     return hex(a) + hex(b) + hex(c) + hex(d);
@@ -248,9 +296,7 @@ class Guestbook {
     if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
     if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
     if (diff < 604800000) return `${Math.floor(diff / 86400000)} 天前`;
-    return date.toLocaleDateString('zh-CN', {
-      year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
-    });
+    return date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
   }
 
   // HTML转义
@@ -263,12 +309,8 @@ class Guestbook {
   // 分页
   renderPagination(totalPages) {
     const paginationEl = document.getElementById('pagination');
-    if (totalPages <= 1) {
-      paginationEl.innerHTML = '';
-      return;
-    }
-    let html = '';
-    html += `<button ${this.currentPage === 1 ? 'disabled' : ''} onclick="guestbook.goToPage(${this.currentPage - 1})">上一页</button>`;
+    if (totalPages <= 1) { paginationEl.innerHTML = ''; return; }
+    let html = `<button ${this.currentPage === 1 ? 'disabled' : ''} onclick="guestbook.goToPage(${this.currentPage - 1})">上一页</button>`;
     for (let i = 1; i <= totalPages; i++) {
       if (i === 1 || i === totalPages || (i >= this.currentPage - 2 && i <= this.currentPage + 2)) {
         html += `<button class="${i === this.currentPage ? 'active' : ''}" onclick="guestbook.goToPage(${i})">${i}</button>`;
@@ -281,7 +323,7 @@ class Guestbook {
   }
 
   goToPage(page) {
-    const totalPages = Math.ceil(this.messages.length / CONFIG.PAGE_SIZE);
+    const totalPages = Math.ceil(this.messages.length / 10);
     if (page < 1 || page > totalPages) return;
     this.currentPage = page;
     this.renderMessages();
@@ -337,22 +379,17 @@ class Guestbook {
     }
 
     this.selectedFiles.push(...files);
-
     files.forEach((file) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const fileIndex = this.selectedFiles.indexOf(file);
         const previewItem = document.createElement('div');
         previewItem.className = 'preview-item';
-        previewItem.innerHTML = `
-          <img src="${e.target.result}" alt="预览">
-          <button class="remove-btn" onclick="guestbook.removeFile(${fileIndex})">×</button>
-        `;
+        previewItem.innerHTML = `<img src="${e.target.result}" alt="预览"><button class="remove-btn" onclick="guestbook.removeFile(${fileIndex})">×</button>`;
         previewContainer.appendChild(previewItem);
       };
       reader.readAsDataURL(file);
     });
-
     e.target.value = '';
   }
 
@@ -369,10 +406,7 @@ class Guestbook {
       reader.onload = (e) => {
         const previewItem = document.createElement('div');
         previewItem.className = 'preview-item';
-        previewItem.innerHTML = `
-          <img src="${e.target.result}" alt="预览">
-          <button class="remove-btn" onclick="guestbook.removeFile(${index})">×</button>
-        `;
+        previewItem.innerHTML = `<img src="${e.target.result}" alt="预览"><button class="remove-btn" onclick="guestbook.removeFile(${index})">×</button>`;
         previewContainer.appendChild(previewItem);
       };
       reader.readAsDataURL(file);
@@ -389,15 +423,8 @@ class Guestbook {
   showImageModal(src) {
     const modal = document.createElement('div');
     modal.className = 'modal';
-    modal.innerHTML = `
-      <button class="close-btn">×</button>
-      <img src="${src}" alt="大图">
-    `;
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal || e.target.classList.contains('close-btn')) {
-        modal.remove();
-      }
-    });
+    modal.innerHTML = `<button class="close-btn">×</button><img src="${src}" alt="大图">`;
+    modal.addEventListener('click', (e) => { if (e.target === modal || e.target.classList.contains('close-btn')) modal.remove(); });
     document.body.appendChild(modal);
     setTimeout(() => modal.classList.add('show'), 10);
   }
