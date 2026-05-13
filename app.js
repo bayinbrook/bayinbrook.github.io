@@ -1,6 +1,6 @@
 /**
- * GitHub 留言板核心逻辑
- * 使用 GitHub API 存储留言和图片
+ * GitHub 留言板 - 使用 GitHub Issues 存储
+ * 无需 Token，留言作为 Issue，图片 base64 存储
  */
 
 class Guestbook {
@@ -8,58 +8,32 @@ class Guestbook {
     this.messages = [];
     this.currentPage = 1;
     this.selectedFiles = [];
-    this.uploadedImages = [];
-    this.token = localStorage.getItem('github_token');
+    this.labels = ['留言'];
 
     this.init();
   }
 
-  // 检查 Token
-  hasToken() {
-    return !!this.token;
-  }
-
-  // 保存 Token 到 localStorage
-  saveToken(token) {
-    this.token = token;
-    localStorage.setItem('github_token', token);
-    closeTokenModal();
-    this.showToast('Token 保存成功！', 'success');
-    // 重新加载留言
-    this.loadMessages();
-  }
-
   async init() {
-    // 如果没有 Token，显示设置界面
-    if (!this.hasToken()) {
-      openTokenModal();
-    }
     await this.loadMessages();
     this.bindEvents();
   }
 
   // GitHub API 请求
   async githubRequest(endpoint, options = {}) {
-    if (!this.hasToken()) {
-      throw new Error('请先设置 GitHub Token');
-    }
-
     const url = `${API_BASE}${endpoint}`;
     const headers = {
-      'Authorization': `token ${this.token}`,
       'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json',
       ...options.headers
     };
 
     try {
       const response = await fetch(url, { ...options, headers });
-      
+
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.message || '请求失败');
       }
-      
+
       return response.json();
     } catch (error) {
       console.error('GitHub API Error:', error);
@@ -67,111 +41,85 @@ class Guestbook {
     }
   }
 
-  // 获取文件 SHA
-  async getFileSha(path) {
-    try {
-      const data = await this.githubRequest(`/repos/${CONFIG.OWNER}/${CONFIG.REPO}/contents/${path}`);
-      return data.sha;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  // 获取留言
+  // 获取所有留言 Issues
   async loadMessages() {
     const loadingEl = document.getElementById('loading');
     const messagesListEl = document.getElementById('messagesList');
-    
+
     loadingEl.style.display = 'flex';
     messagesListEl.innerHTML = '';
 
     try {
-      const data = await this.githubRequest(
-        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/contents/${CONFIG.MESSAGES_PATH}`
+      // 获取所有带有 '留言' 标签的 Issues
+      const issues = await this.githubRequest(
+        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/issues?labels=留言&state=all&per_page=100`
       );
-      
-      const content = atob(data.content);
-      this.messages = JSON.parse(content);
-      
+
+      // 过滤掉 Pull Requests（PRs 也有 issue_number）
+      const messageIssues = issues.filter(issue => !issue.pull_request);
+
+      this.messages = messageIssues.map(issue => this.parseIssueToMessage(issue));
+
       // 按时间倒序排列
       this.messages.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      
+
       this.renderMessages();
     } catch (error) {
-      // 文件不存在，创建新的
-      if (error.message.includes('Not Found') || error.message.includes('404')) {
-        this.messages = [];
-        await this.saveMessages();
-        this.renderMessages();
-      } else {
-        this.showToast('加载留言失败: ' + error.message, 'error');
-        messagesListEl.innerHTML = '<div class="empty-state"><div class="icon">😢</div><p>加载失败，请刷新重试</p></div>';
-      }
+      this.showToast('加载留言失败: ' + error.message, 'error');
+      messagesListEl.innerHTML = '<div class="empty-state"><div class="icon">😢</div><p>加载失败，请刷新重试</p></div>';
     } finally {
       loadingEl.style.display = 'none';
     }
   }
 
-  // 保存留言
-  async saveMessages() {
-    const sha = await this.getFileSha(CONFIG.MESSAGES_PATH);
-    
-    const content = btoa(unescape(encodeURIComponent(JSON.stringify(this.messages, null, 2))));
-    
-    await this.githubRequest(
-      `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/contents/${CONFIG.MESSAGES_PATH}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({
-          message: '更新留言板数据',
-          content: content,
-          sha: sha
-        })
-      }
-    );
+  // 解析 Issue 为留言对象
+  parseIssueToMessage(issue) {
+    try {
+      // body 格式: JSON.stringify({ username, email, content, images, timestamp })
+      const data = JSON.parse(issue.body);
+      return {
+        id: issue.id.toString(),
+        issueNumber: issue.number,
+        username: data.username || '匿名',
+        email: data.email || '',
+        content: data.content || '',
+        images: data.images || [],
+        timestamp: data.timestamp || issue.created_at
+      };
+    } catch (e) {
+      // 兼容旧格式或其他格式的 Issue
+      return {
+        id: issue.id.toString(),
+        issueNumber: issue.number,
+        username: issue.user?.login || '匿名',
+        email: '',
+        content: issue.body || issue.title,
+        images: [],
+        timestamp: issue.created_at
+      };
+    }
   }
 
-  // 上传图片到 GitHub
-  async uploadImage(file) {
+  // 将文件转为 base64
+  fileToBase64(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          const base64 = e.target.result.split(',')[1];
-          const filename = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-          const path = CONFIG.IMAGES_PATH + filename;
-          
-          // 检查文件是否存在（获取 SHA）
-          const sha = await this.getFileSha(path);
-          
-          await this.githubRequest(
-            `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/contents/${path}`,
-            {
-              method: 'PUT',
-              body: JSON.stringify({
-                message: `上传图片: ${filename}`,
-                content: base64,
-                sha: sha
-              })
-            }
-          );
-          
-          // 返回图片URL
-          const imageUrl = CONFIG.BASE_URL + path;
-          resolve(imageUrl);
-        } catch (error) {
-          reject(error);
-        }
-      };
+      reader.onload = (e) => resolve(e.target.result);
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
   }
 
-  // 添加留言
-  async addMessage(username, email, content, images = []) {
-    const message = {
-      id: Date.now().toString(),
+  // 创建留言 Issue
+  async addMessage(username, email, content) {
+    // 将图片转为 base64
+    const images = [];
+    for (const file of this.selectedFiles) {
+      const base64 = await this.fileToBase64(file);
+      images.push(base64);
+    }
+
+    const data = {
       username: username.trim(),
       email: email.trim(),
       content: content.trim(),
@@ -179,16 +127,24 @@ class Guestbook {
       timestamp: new Date().toISOString()
     };
 
-    this.messages.unshift(message);
-    
-    try {
-      await this.saveMessages();
-      this.showToast('留言发表成功！', 'success');
-      this.renderMessages();
-    } catch (error) {
-      this.messages.shift(); // 回滚
-      throw error;
-    }
+    const body = JSON.stringify(data, null, 2);
+
+    // 创建 Issue
+    await this.githubRequest(
+      `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/issues`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          title: `留言 by ${username}`,
+          body: body,
+          labels: this.labels
+        })
+      }
+    );
+
+    // 重新加载留言
+    await this.loadMessages();
+    this.showToast('留言发表成功！', 'success');
   }
 
   // 渲染留言列表
@@ -271,32 +227,25 @@ class Guestbook {
 
     const utf8String = unescape(encodeURIComponent(string));
     const bytes = [];
-    
+
     for (let i = 0; i < utf8String.length; i++) {
       bytes.push(utf8String.charCodeAt(i));
     }
 
-    // 初始化变量
     let a = 1732584193, b = -271733879, c = -1732584194, d = 271733878;
 
-    // 处理每64字节
     for (let k = 0; k < bytes.length; k += 64) {
       const x = new Array(16);
       for (let i = 0; i < 16; i++) {
         x[i] = bytes[k + i] || 0;
       }
 
-      let aa = a, bb = b, cc = c, dd = d;
-
       a = addUnsigned(a, rotateLeft(addUnsigned(a, (b & c) | (~b & d)) + x[0] + 1518500249, 7));
       d = addUnsigned(d, rotateLeft(addUnsigned(d, (a & b) | (~a & c)) + x[1] + 1518500249, 12));
       c = addUnsigned(c, rotateLeft(addUnsigned(c, (d & a) | (~d & b)) + x[2] + 1518500249, 17));
       b = addUnsigned(b, rotateLeft(addUnsigned(b, (c & d) | (~c & a)) + x[3] + 1518500249, 19));
-      
-      // ... 简化版，只处理前4个32位字
     }
 
-    // 转换为十六进制
     const hex = (n) => {
       const h = '0123456789abcdef';
       let s = '';
@@ -339,7 +288,7 @@ class Guestbook {
   // 渲染分页
   renderPagination(totalPages) {
     const paginationEl = document.getElementById('pagination');
-    
+
     if (totalPages <= 1) {
       paginationEl.innerHTML = '';
       return;
@@ -369,7 +318,7 @@ class Guestbook {
   goToPage(page) {
     const totalPages = Math.ceil(this.messages.length / CONFIG.PAGE_SIZE);
     if (page < 1 || page > totalPages) return;
-    
+
     this.currentPage = page;
     this.renderMessages();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -379,10 +328,10 @@ class Guestbook {
   bindEvents() {
     // 表单提交
     document.getElementById('messageForm').addEventListener('submit', (e) => this.handleSubmit(e));
-    
+
     // 文件选择
     document.getElementById('images').addEventListener('change', (e) => this.handleFileSelect(e));
-    
+
     // 刷新按钮
     document.getElementById('refreshBtn').addEventListener('click', () => this.loadMessages());
   }
@@ -406,20 +355,8 @@ class Guestbook {
     submitBtn.querySelector('.btn-loading').style.display = 'inline';
 
     try {
-      // 上传图片
-      const uploadedImages = [];
-      for (const file of this.selectedFiles) {
-        try {
-          const url = await this.uploadImage(file);
-          uploadedImages.push(url);
-        } catch (error) {
-          console.error('图片上传失败:', error);
-          this.showToast(`图片 "${file.name}" 上传失败，跳过`, 'error');
-        }
-      }
-
       // 添加留言
-      await this.addMessage(username, email, content, uploadedImages);
+      await this.addMessage(username, email, content);
 
       // 清空表单
       document.getElementById('messageForm').reset();
@@ -449,7 +386,7 @@ class Guestbook {
     this.selectedFiles.push(...files);
 
     // 显示预览
-    files.forEach((file, index) => {
+    files.forEach((file) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const fileIndex = this.selectedFiles.indexOf(file);
@@ -494,7 +431,7 @@ class Guestbook {
     });
   }
 
-  // 绑定图片点击事件（图片查看器）
+  // 绑定图片点击事件
   bindImageClickEvents() {
     document.querySelectorAll('.message-images img').forEach(img => {
       img.addEventListener('click', () => this.showImageModal(img.src));
@@ -509,7 +446,7 @@ class Guestbook {
       <button class="close-btn">×</button>
       <img src="${src}" alt="大图">
     `;
-    
+
     modal.addEventListener('click', (e) => {
       if (e.target === modal || e.target.classList.contains('close-btn')) {
         modal.remove();
@@ -525,7 +462,7 @@ class Guestbook {
     const toast = document.getElementById('toast');
     toast.textContent = message;
     toast.className = `toast ${type} show`;
-    
+
     setTimeout(() => {
       toast.classList.remove('show');
     }, 3000);
@@ -534,31 +471,3 @@ class Guestbook {
 
 // 初始化
 const guestbook = new Guestbook();
-
-// Token 模态框函数
-function openTokenModal() {
-  const modal = document.getElementById('tokenModal');
-  modal.style.display = 'flex';
-  const savedToken = localStorage.getItem('github_token');
-  if (savedToken) {
-    document.getElementById('githubToken').value = savedToken;
-  }
-}
-
-function closeTokenModal() {
-  const modal = document.getElementById('tokenModal');
-  modal.style.display = 'none';
-}
-
-// 绑定设置按钮
-document.getElementById('settingsBtn').addEventListener('click', openTokenModal);
-
-// 绑定保存 Token 按钮
-document.getElementById('saveTokenBtn').addEventListener('click', () => {
-  const token = document.getElementById('githubToken').value.trim();
-  if (token) {
-    guestbook.saveToken(token);
-  } else {
-    alert('请输入 Token');
-  }
-});
