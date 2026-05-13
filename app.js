@@ -1,6 +1,7 @@
 /**
- * GitHub 留言板 - 使用 GitHub Issues 存储
- * 无需 Token，留言作为 Issue，图片 base64 存储
+ * GitHub 留言板
+ * 留言存储：GitHub Issues（自动同步到 messages.json）
+ * 图片存储：base64 编码在 JSON 中
  */
 
 class Guestbook {
@@ -41,7 +42,7 @@ class Guestbook {
     }
   }
 
-  // 获取所有留言 Issues
+  // 加载留言（优先从 JSON 文件，fallback 到 Issues）
   async loadMessages() {
     const loadingEl = document.getElementById('loading');
     const messagesListEl = document.getElementById('messagesList');
@@ -50,32 +51,49 @@ class Guestbook {
     messagesListEl.innerHTML = '';
 
     try {
-      // 获取所有带有 '留言' 标签的 Issues
-      const issues = await this.githubRequest(
-        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/issues?labels=留言&state=all&per_page=100`
+      // 优先从 messages.json 加载（由 GitHub Action 同步）
+      const data = await this.githubRequest(
+        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/contents/messages.json`
       );
 
-      // 过滤掉 Pull Requests（PRs 也有 issue_number）
-      const messageIssues = issues.filter(issue => !issue.pull_request);
+      const content = atob(data.content);
+      this.messages = JSON.parse(content);
 
-      this.messages = messageIssues.map(issue => this.parseIssueToMessage(issue));
-
-      // 按时间倒序排列
+      // 按时间倒序
       this.messages.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
       this.renderMessages();
     } catch (error) {
-      this.showToast('加载留言失败: ' + error.message, 'error');
-      messagesListEl.innerHTML = '<div class="empty-state"><div class="icon">😢</div><p>加载失败，请刷新重试</p></div>';
+      // 如果 JSON 不存在，尝试从 Issues 加载
+      console.log('messages.json not found, loading from Issues...');
+      await this.loadFromIssues();
     } finally {
       loadingEl.style.display = 'none';
+    }
+  }
+
+  // 从 Issues 加载留言（备用）
+  async loadFromIssues() {
+    try {
+      const issues = await this.githubRequest(
+        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/issues?labels=留言&state=all&per_page=100`
+      );
+
+      const messageIssues = issues.filter(issue => !issue.pull_request);
+      this.messages = messageIssues.map(issue => this.parseIssueToMessage(issue));
+
+      this.messages.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      this.renderMessages();
+    } catch (error) {
+      this.showToast('加载留言失败', 'error');
+      document.getElementById('messagesList').innerHTML =
+        '<div class="empty-state"><div class="icon">😢</div><p>加载失败，请刷新重试</p></div>';
     }
   }
 
   // 解析 Issue 为留言对象
   parseIssueToMessage(issue) {
     try {
-      // body 格式: JSON.stringify({ username, email, content, images, timestamp })
       const data = JSON.parse(issue.body);
       return {
         id: issue.id.toString(),
@@ -87,7 +105,6 @@ class Guestbook {
         timestamp: data.timestamp || issue.created_at
       };
     } catch (e) {
-      // 兼容旧格式或其他格式的 Issue
       return {
         id: issue.id.toString(),
         issueNumber: issue.number,
@@ -110,9 +127,9 @@ class Guestbook {
     });
   }
 
-  // 创建留言 Issue
+  // 提交留言
   async addMessage(username, email, content) {
-    // 将图片转为 base64
+    // 图片转为 base64
     const images = [];
     for (const file of this.selectedFiles) {
       const base64 = await this.fileToBase64(file);
@@ -127,8 +144,6 @@ class Guestbook {
       timestamp: new Date().toISOString()
     };
 
-    const body = JSON.stringify(data, null, 2);
-
     // 创建 Issue
     await this.githubRequest(
       `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/issues`,
@@ -136,15 +151,38 @@ class Guestbook {
         method: 'POST',
         body: JSON.stringify({
           title: `留言 by ${username}`,
-          body: body,
+          body: JSON.stringify(data, null, 2),
           labels: this.labels
         })
       }
     );
 
-    // 重新加载留言
+    // 触发 GitHub Action 同步
+    await this.triggerSync();
+
+    // 重新加载
     await this.loadMessages();
     this.showToast('留言发表成功！', 'success');
+  }
+
+  // 触发 GitHub Action 同步
+  async triggerSync() {
+    try {
+      await this.githubRequest(
+        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/actions/workflows/sync-messages.yml/dispatches`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            ref: 'main',
+            inputs: { sync_all: 'true' }
+          })
+        }
+      );
+      console.log('Sync workflow triggered');
+    } catch (error) {
+      // 如果触发失败，忽略（用户刷新后也会更新）
+      console.log('Sync trigger skipped, will refresh on next load');
+    }
   }
 
   // 渲染留言列表
@@ -166,19 +204,15 @@ class Guestbook {
       return;
     }
 
-    // 分页计算
+    // 分页
     const totalPages = Math.ceil(this.messages.length / CONFIG.PAGE_SIZE);
     const start = (this.currentPage - 1) * CONFIG.PAGE_SIZE;
     const end = start + CONFIG.PAGE_SIZE;
     const pageMessages = this.messages.slice(start, end);
 
-    // 渲染留言
     messagesListEl.innerHTML = pageMessages.map(msg => this.renderMessageCard(msg)).join('');
 
-    // 绑定图片点击事件
     this.bindImageClickEvents();
-
-    // 渲染分页
     this.renderPagination(totalPages);
   }
 
@@ -215,37 +249,30 @@ class Guestbook {
     return msg.username.charAt(0).toUpperCase();
   }
 
-  // 简单的 MD5 哈希
+  // MD5
   md5(string) {
     function rotateLeft(value, amount) {
       return (value << amount) | (value >>> (32 - amount));
     }
-
     function addUnsigned(x, y) {
       return (x + y) >>> 0;
     }
-
     const utf8String = unescape(encodeURIComponent(string));
     const bytes = [];
-
     for (let i = 0; i < utf8String.length; i++) {
       bytes.push(utf8String.charCodeAt(i));
     }
-
     let a = 1732584193, b = -271733879, c = -1732584194, d = 271733878;
-
     for (let k = 0; k < bytes.length; k += 64) {
       const x = new Array(16);
       for (let i = 0; i < 16; i++) {
         x[i] = bytes[k + i] || 0;
       }
-
       a = addUnsigned(a, rotateLeft(addUnsigned(a, (b & c) | (~b & d)) + x[0] + 1518500249, 7));
       d = addUnsigned(d, rotateLeft(addUnsigned(d, (a & b) | (~a & c)) + x[1] + 1518500249, 12));
       c = addUnsigned(c, rotateLeft(addUnsigned(c, (d & a) | (~d & b)) + x[2] + 1518500249, 17));
       b = addUnsigned(b, rotateLeft(addUnsigned(b, (c & d) | (~c & a)) + x[3] + 1518500249, 19));
     }
-
     const hex = (n) => {
       const h = '0123456789abcdef';
       let s = '';
@@ -254,7 +281,6 @@ class Guestbook {
       }
       return s;
     };
-
     return hex(a) + hex(b) + hex(c) + hex(d);
   }
 
@@ -263,18 +289,12 @@ class Guestbook {
     const date = new Date(timestamp);
     const now = new Date();
     const diff = now - date;
-
     if (diff < 60000) return '刚刚';
     if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
     if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
     if (diff < 604800000) return `${Math.floor(diff / 86400000)} 天前`;
-
     return date.toLocaleDateString('zh-CN', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
+      year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
     });
   }
 
@@ -285,21 +305,15 @@ class Guestbook {
     return div.innerHTML;
   }
 
-  // 渲染分页
+  // 分页
   renderPagination(totalPages) {
     const paginationEl = document.getElementById('pagination');
-
     if (totalPages <= 1) {
       paginationEl.innerHTML = '';
       return;
     }
-
     let html = '';
-
-    // 上一页
     html += `<button ${this.currentPage === 1 ? 'disabled' : ''} onclick="guestbook.goToPage(${this.currentPage - 1})">上一页</button>`;
-
-    // 页码
     for (let i = 1; i <= totalPages; i++) {
       if (i === 1 || i === totalPages || (i >= this.currentPage - 2 && i <= this.currentPage + 2)) {
         html += `<button class="${i === this.currentPage ? 'active' : ''}" onclick="guestbook.goToPage(${i})">${i}</button>`;
@@ -307,18 +321,13 @@ class Guestbook {
         html += '<span>...</span>';
       }
     }
-
-    // 下一页
     html += `<button ${this.currentPage === totalPages ? 'disabled' : ''} onclick="guestbook.goToPage(${this.currentPage + 1})">下一页</button>`;
-
     paginationEl.innerHTML = html;
   }
 
-  // 跳转到指定页
   goToPage(page) {
     const totalPages = Math.ceil(this.messages.length / CONFIG.PAGE_SIZE);
     if (page < 1 || page > totalPages) return;
-
     this.currentPage = page;
     this.renderMessages();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -326,20 +335,14 @@ class Guestbook {
 
   // 绑定事件
   bindEvents() {
-    // 表单提交
     document.getElementById('messageForm').addEventListener('submit', (e) => this.handleSubmit(e));
-
-    // 文件选择
     document.getElementById('images').addEventListener('change', (e) => this.handleFileSelect(e));
-
-    // 刷新按钮
     document.getElementById('refreshBtn').addEventListener('click', () => this.loadMessages());
   }
 
-  // 处理表单提交
+  // 表单提交
   async handleSubmit(e) {
     e.preventDefault();
-
     const username = document.getElementById('username').value;
     const email = document.getElementById('email').value;
     const content = document.getElementById('content').value;
@@ -355,10 +358,7 @@ class Guestbook {
     submitBtn.querySelector('.btn-loading').style.display = 'inline';
 
     try {
-      // 添加留言
       await this.addMessage(username, email, content);
-
-      // 清空表单
       document.getElementById('messageForm').reset();
       this.selectedFiles = [];
       document.getElementById('previewContainer').innerHTML = '';
@@ -371,21 +371,18 @@ class Guestbook {
     }
   }
 
-  // 处理文件选择
+  // 文件选择
   handleFileSelect(e) {
     const files = Array.from(e.target.files);
     const previewContainer = document.getElementById('previewContainer');
 
-    // 限制最多5张图片
     if (this.selectedFiles.length + files.length > 5) {
       this.showToast('最多只能上传5张图片', 'error');
       files.splice(5 - this.selectedFiles.length);
     }
 
-    // 添加到已选文件
     this.selectedFiles.push(...files);
 
-    // 显示预览
     files.forEach((file) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -401,21 +398,17 @@ class Guestbook {
       reader.readAsDataURL(file);
     });
 
-    // 清空input，允许重新选择相同文件
     e.target.value = '';
   }
 
-  // 移除文件
   removeFile(index) {
     this.selectedFiles.splice(index, 1);
     this.renderFilePreviews();
   }
 
-  // 重新渲染文件预览
   renderFilePreviews() {
     const previewContainer = document.getElementById('previewContainer');
     previewContainer.innerHTML = '';
-
     this.selectedFiles.forEach((file, index) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -431,14 +424,13 @@ class Guestbook {
     });
   }
 
-  // 绑定图片点击事件
+  // 图片查看器
   bindImageClickEvents() {
     document.querySelectorAll('.message-images img').forEach(img => {
       img.addEventListener('click', () => this.showImageModal(img.src));
     });
   }
 
-  // 显示图片模态框
   showImageModal(src) {
     const modal = document.createElement('div');
     modal.className = 'modal';
@@ -446,28 +438,22 @@ class Guestbook {
       <button class="close-btn">×</button>
       <img src="${src}" alt="大图">
     `;
-
     modal.addEventListener('click', (e) => {
       if (e.target === modal || e.target.classList.contains('close-btn')) {
         modal.remove();
       }
     });
-
     document.body.appendChild(modal);
     setTimeout(() => modal.classList.add('show'), 10);
   }
 
-  // 显示提示
+  // Toast
   showToast(message, type = 'success') {
     const toast = document.getElementById('toast');
     toast.textContent = message;
     toast.className = `toast ${type} show`;
-
-    setTimeout(() => {
-      toast.classList.remove('show');
-    }, 3000);
+    setTimeout(() => toast.classList.remove('show'), 3000);
   }
 }
 
-// 初始化
 const guestbook = new Guestbook();
