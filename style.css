@@ -121,6 +121,22 @@ header h1 {
   font-weight: normal;
 }
 
+.upload-btn {
+  display: inline-block;
+  padding: 12px 24px;
+  background: var(--bg);
+  border: 2px solid var(--primary);
+  border-radius: 8px;
+  color: var(--primary);
+  font-weight: 600;
+  transition: all 0.3s;
+}
+
+.upload-btn:hover {
+  background: var(--primary);
+  color: white;
+}
+
 .preview-container {
   display: flex;
   flex-wrap: wrap;
