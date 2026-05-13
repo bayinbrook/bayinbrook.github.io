@@ -42,7 +42,7 @@ class Guestbook {
     }
   }
 
-  // 加载留言
+  // 加载留言 - 使用 Gist Embed API 避免速率限制
   async loadMessages() {
     const loadingEl = document.getElementById('loading');
     const messagesListEl = document.getElementById('messagesList');
@@ -59,22 +59,25 @@ class Guestbook {
         gist.description && gist.description.startsWith('留言-')
       );
 
-      // 加载每条留言的内容
+      // 加载每条留言的内容 - 使用 embed API 避免速率限制
       this.messages = [];
-      for (const gist of messageGists) {
-        try {
-          const gistData = await this.gistRequest(`/gists/${gist.id}`);
-          const files = Object.values(gistData.files);
-          if (files.length > 0) {
-            const content = files[0].content;
+      const loadPromises = messageGists.map(gist => 
+        fetch(`https://gist.github.com/${gist.id}.json`)
+          .then(res => res.json())
+          .then(data => {
+            const content = data.files[Object.keys(data.files)[0]].content;
             const message = JSON.parse(content);
             message.gistId = gist.id;
-            this.messages.push(message);
-          }
-        } catch (e) {
-          console.warn('Failed to load gist:', gist.id, e);
-        }
-      }
+            return message;
+          })
+          .catch(e => {
+            console.warn('Failed to load gist:', gist.id, e);
+            return null;
+          })
+      );
+
+      const results = await Promise.all(loadPromises);
+      this.messages = results.filter(msg => msg !== null);
 
       // 按时间倒序
       this.messages.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
