@@ -9,20 +9,44 @@ class Guestbook {
     this.currentPage = 1;
     this.selectedFiles = [];
     this.uploadedImages = [];
-    
+    this.token = localStorage.getItem('github_token');
+
     this.init();
   }
 
+  // 检查 Token
+  hasToken() {
+    return !!this.token;
+  }
+
+  // 保存 Token 到 localStorage
+  saveToken(token) {
+    this.token = token;
+    localStorage.setItem('github_token', token);
+    closeTokenModal();
+    this.showToast('Token 保存成功！', 'success');
+    // 重新加载留言
+    this.loadMessages();
+  }
+
   async init() {
+    // 如果没有 Token，显示设置界面
+    if (!this.hasToken()) {
+      openTokenModal();
+    }
     await this.loadMessages();
     this.bindEvents();
   }
 
   // GitHub API 请求
   async githubRequest(endpoint, options = {}) {
+    if (!this.hasToken()) {
+      throw new Error('请先设置 GitHub Token');
+    }
+
     const url = `${API_BASE}${endpoint}`;
     const headers = {
-      'Authorization': `token ${CONFIG.TOKEN}`,
+      'Authorization': `token ${this.token}`,
       'Accept': 'application/vnd.github.v3+json',
       'Content-Type': 'application/json',
       ...options.headers
@@ -510,3 +534,31 @@ class Guestbook {
 
 // 初始化
 const guestbook = new Guestbook();
+
+// Token 模态框函数
+function openTokenModal() {
+  const modal = document.getElementById('tokenModal');
+  modal.style.display = 'flex';
+  const savedToken = localStorage.getItem('github_token');
+  if (savedToken) {
+    document.getElementById('githubToken').value = savedToken;
+  }
+}
+
+function closeTokenModal() {
+  const modal = document.getElementById('tokenModal');
+  modal.style.display = 'none';
+}
+
+// 绑定设置按钮
+document.getElementById('settingsBtn').addEventListener('click', openTokenModal);
+
+// 绑定保存 Token 按钮
+document.getElementById('saveTokenBtn').addEventListener('click', () => {
+  const token = document.getElementById('githubToken').value.trim();
+  if (token) {
+    guestbook.saveToken(token);
+  } else {
+    alert('请输入 Token');
+  }
+});
