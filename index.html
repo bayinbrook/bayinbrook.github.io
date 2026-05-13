@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>留言板</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📝 留言板</h1>
+      <p class="subtitle">留下你的足迹</p>
+    </header>
+
+    <!-- 留言表单 -->
+    <section class="form-section">
+      <h2>发表留言</h2>
+      <form id="messageForm">
+        <div class="form-group">
+          <label for="username">昵称 *</label>
+          <input type="text" id="username" name="username" placeholder="请输入昵称" required>
+        </div>
+        
+        <div class="form-group">
+          <label for="email">邮箱 (可选)</label>
+          <input type="email" id="email" name="email" placeholder="用于显示Gravatar头像">
+        </div>
+        
+        <div class="form-group">
+          <label for="content">留言内容 *</label>
+          <textarea id="content" name="content" placeholder="说点什么吧..." required rows="4"></textarea>
+        </div>
+        
+        <div class="form-group">
+          <label for="images">上传图片 (可选)</label>
+          <div class="file-upload">
+            <input type="file" id="images" name="images" accept="image/*" multiple>
+            <div id="previewContainer" class="preview-container"></div>
+          </div>
+        </div>
+        
+        <button type="submit" id="submitBtn">
+          <span class="btn-text">提交留言</span>
+          <span class="btn-loading" style="display:none">提交中...</span>
+        </button>
+      </form>
+    </section>
+
+    <!-- 留言列表 -->
+    <section class="messages-section">
+      <div class="messages-header">
+        <h2>留言列表 <span id="messageCount">(0)</span></h2>
+        <button id="refreshBtn" class="btn-refresh">🔄 刷新</button>
+      </div>
+      
+      <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <span>加载中...</span>
+      </div>
+      
+      <div id="messagesList" class="messages-list">
+        <!-- 留言将通过JS动态加载 -->
+      </div>
+      
+      <div id="pagination" class="pagination">
+        <!-- 分页按钮将通过JS动态生成 -->
+      </div>
+    </section>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div id="toast" class="toast"></div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
