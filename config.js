@@ -3,7 +3,8 @@
 
 const CONFIG = {
   // GitHub Personal Access Token (需要 repo 权限)
-  TOKEN: "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",
+  // ⚠️ 请替换为您自己的Token
+  TOKEN: "YOUR_GITHUB_TOKEN_HERE",
   
   // GitHub 仓库信息
   OWNER: "bayinbrook",
