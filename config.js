@@ -1,5 +1,5 @@
-# 留言板配置文件
-# 请根据您的GitHub信息修改以下配置
+// 留言板配置文件
+// 请根据您的GitHub信息修改以下配置
 
 const CONFIG = {
   // GitHub Personal Access Token (需要 repo 权限)
