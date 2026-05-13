@@ -1,7 +1,6 @@
 /**
- * GitHub 留言板
- * 留言存储：GitHub Issues（自动同步到 messages.json）
- * 图片存储：base64 编码在 JSON 中
+ * GitHub 留言板 - 使用 GitHub Gist 存储
+ * 无需 Token，留言存储在 GitHub Gist 中
  */
 
 class Guestbook {
@@ -9,7 +8,7 @@ class Guestbook {
     this.messages = [];
     this.currentPage = 1;
     this.selectedFiles = [];
-    this.labels = ['留言'];
+    this.gistId = null; // 存储留言列表的 Gist ID
 
     this.init();
   }
@@ -19,11 +18,12 @@ class Guestbook {
     this.bindEvents();
   }
 
-  // GitHub API 请求
-  async githubRequest(endpoint, options = {}) {
-    const url = `${API_BASE}${endpoint}`;
+  // GitHub Gist API 请求
+  async gistRequest(endpoint, options = {}) {
+    const url = `https://api.github.com${endpoint}`;
     const headers = {
       'Accept': 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
       ...options.headers
     };
 
@@ -37,12 +37,12 @@ class Guestbook {
 
       return response.json();
     } catch (error) {
-      console.error('GitHub API Error:', error);
+      console.error('GitHub Gist API Error:', error);
       throw error;
     }
   }
 
-  // 加载留言（优先从 JSON 文件，fallback 到 Issues）
+  // 加载留言
   async loadMessages() {
     const loadingEl = document.getElementById('loading');
     const messagesListEl = document.getElementById('messagesList');
@@ -51,69 +51,40 @@ class Guestbook {
     messagesListEl.innerHTML = '';
 
     try {
-      // 优先从 messages.json 加载（由 GitHub Action 同步）
-      const data = await this.githubRequest(
-        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/contents/messages.json`
+      // 获取所有用户的公开 Gist
+      const gists = await this.gistRequest(`/users/${CONFIG.GIST_OWNER}/gists`);
+
+      // 过滤出留言 Gist（描述以 "留言-" 开头）
+      const messageGists = gists.filter(gist =>
+        gist.description && gist.description.startsWith('留言-')
       );
 
-      const content = atob(data.content);
-      this.messages = JSON.parse(content);
+      // 加载每条留言的内容
+      this.messages = [];
+      for (const gist of messageGists) {
+        try {
+          const gistData = await this.gistRequest(`/gists/${gist.id}`);
+          const files = Object.values(gistData.files);
+          if (files.length > 0) {
+            const content = files[0].content;
+            const message = JSON.parse(content);
+            message.gistId = gist.id;
+            this.messages.push(message);
+          }
+        } catch (e) {
+          console.warn('Failed to load gist:', gist.id, e);
+        }
+      }
 
       // 按时间倒序
       this.messages.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
       this.renderMessages();
     } catch (error) {
-      // 如果 JSON 不存在，尝试从 Issues 加载
-      console.log('messages.json not found, loading from Issues...');
-      await this.loadFromIssues();
+      this.showToast('加载留言失败: ' + error.message, 'error');
+      messagesListEl.innerHTML = '<div class="empty-state"><div class="icon">😢</div><p>加载失败，请刷新重试</p></div>';
     } finally {
       loadingEl.style.display = 'none';
-    }
-  }
-
-  // 从 Issues 加载留言（备用）
-  async loadFromIssues() {
-    try {
-      const issues = await this.githubRequest(
-        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/issues?labels=留言&state=all&per_page=100`
-      );
-
-      const messageIssues = issues.filter(issue => !issue.pull_request);
-      this.messages = messageIssues.map(issue => this.parseIssueToMessage(issue));
-
-      this.messages.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      this.renderMessages();
-    } catch (error) {
-      this.showToast('加载留言失败', 'error');
-      document.getElementById('messagesList').innerHTML =
-        '<div class="empty-state"><div class="icon">😢</div><p>加载失败，请刷新重试</p></div>';
-    }
-  }
-
-  // 解析 Issue 为留言对象
-  parseIssueToMessage(issue) {
-    try {
-      const data = JSON.parse(issue.body);
-      return {
-        id: issue.id.toString(),
-        issueNumber: issue.number,
-        username: data.username || '匿名',
-        email: data.email || '',
-        content: data.content || '',
-        images: data.images || [],
-        timestamp: data.timestamp || issue.created_at
-      };
-    } catch (e) {
-      return {
-        id: issue.id.toString(),
-        issueNumber: issue.number,
-        username: issue.user?.login || '匿名',
-        email: '',
-        content: issue.body || issue.title,
-        images: [],
-        timestamp: issue.created_at
-      };
     }
   }
 
@@ -127,7 +98,7 @@ class Guestbook {
     });
   }
 
-  // 提交留言
+  // 创建留言 Gist
   async addMessage(username, email, content) {
     // 图片转为 base64
     const images = [];
@@ -136,7 +107,7 @@ class Guestbook {
       images.push(base64);
     }
 
-    const data = {
+    const message = {
       username: username.trim(),
       email: email.trim(),
       content: content.trim(),
@@ -144,45 +115,26 @@ class Guestbook {
       timestamp: new Date().toISOString()
     };
 
-    // 创建 Issue
-    await this.githubRequest(
-      `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/issues`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          title: `留言 by ${username}`,
-          body: JSON.stringify(data, null, 2),
-          labels: this.labels
-        })
-      }
-    );
-
-    // 触发 GitHub Action 同步
-    await this.triggerSync();
-
-    // 重新加载
-    await this.loadMessages();
-    this.showToast('留言发表成功！', 'success');
-  }
-
-  // 触发 GitHub Action 同步
-  async triggerSync() {
-    try {
-      await this.githubRequest(
-        `/repos/${CONFIG.OWNER}/${CONFIG.REPO}/actions/workflows/sync-messages.yml/dispatches`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            ref: 'main',
-            inputs: { sync_all: 'true' }
-          })
+    // 创建 Gist
+    const gist = await this.gistRequest('/gists', {
+      method: 'POST',
+      body: JSON.stringify({
+        description: `留言-${username}`,
+        public: true,
+        files: {
+          'message.json': {
+            content: JSON.stringify(message, null, 2)
+          }
         }
-      );
-      console.log('Sync workflow triggered');
-    } catch (error) {
-      // 如果触发失败，忽略（用户刷新后也会更新）
-      console.log('Sync trigger skipped, will refresh on next load');
-    }
+      })
+    });
+
+    message.gistId = gist.id;
+
+    // 添加到列表开头
+    this.messages.unshift(message);
+    this.renderMessages();
+    this.showToast('留言发表成功！', 'success');
   }
 
   // 渲染留言列表
@@ -222,7 +174,7 @@ class Guestbook {
     const time = this.formatTime(msg.timestamp);
 
     return `
-      <div class="message-card" data-id="${msg.id}">
+      <div class="message-card" data-id="${msg.gistId || msg.id}">
         <div class="message-header">
           <div class="avatar">${avatar}</div>
           <div class="message-info">
