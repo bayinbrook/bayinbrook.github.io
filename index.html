@@ -1,134 +1,81 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MOMA Token 留言板</title>
-    <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
-        }
-        body {
-            max-width: 800px;
-            margin: 30px auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }
-        .box {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        h2 {
-            margin-bottom: 15px;
-            color: #333;
-        }
-        input, textarea {
-            width: 100%;
-            padding: 10px;
-            margin: 8px 0;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
-        }
-        button {
-            background: #007bff;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
-        }
-        button:hover {
-            background: #0056b3;
-        }
-        .message {
-            padding: 12px;
-            border-bottom: 1px solid #eee;
-        }
-        .message h4 {
-            color: #007bff;
-            margin-bottom: 5px;
-        }
-        .message p {
-            color: #333;
-        }
-        .message .time {
-            font-size: 12px;
-            color: #999;
-            margin-top: 5px;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>留言板</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div class="container">
+    <header>
+      <h1>📝 留言板</h1>
+      <p class="subtitle">留下你的足迹</p>
+    </header>
 
-    <div class="box">
-        <h2>📝 MOMA Token 留言板</h2>
-        <input type="text" id="name" placeholder="请输入你的昵称">
-        <textarea id="content" rows="4" placeholder="请输入留言内容"></textarea>
-        <button onclick="sendMsg()">提交留言</button>
-    </div>
+    <!-- 留言表单 -->
+    <section class="form-section">
+      <h2>发表留言</h2>
+      <form id="messageForm">
+        <div class="form-group">
+          <label for="username">昵称 *</label>
+          <input type="text" id="username" name="username" placeholder="请输入昵称" required>
+        </div>
 
-    <div class="box">
-        <h2>💬 最新留言</h2>
-        <div id="msgList"></div>
-    </div>
+        <div class="form-group">
+          <label for="email">邮箱 (可选)</label>
+          <input type="email" id="email" name="email" placeholder="用于显示Gravatar头像">
+        </div>
 
-    <script>
-        // 页面加载时读取留言
-        window.onload = getMessages;
+        <div class="form-group">
+          <label for="content">留言内容 *</label>
+          <textarea id="content" name="content" placeholder="说点什么吧..." required rows="4"></textarea>
+        </div>
 
-        // 读取本地留言（存在浏览器本地，不会丢失）
-        function getMessages() {
-            let msgs = JSON.parse(localStorage.getItem("momaMessages") || "[]");
-            let html = "";
-            
-            // 倒序显示（最新的在最上面）
-            msgs.reverse().forEach(item => {
-                html += `
-                <div class="message">
-                    <h4>${item.name}</h4>
-                    <p>${item.content}</p>
-                    <div class="time">${item.time}</div>
-                </div>
-                `;
-            });
+        <div class="form-group">
+          <label for="images">上传图片 (可选，最多5张)</label>
+          <div class="file-upload">
+            <label for="images" class="upload-btn">
+              📷 选择图片
+            </label>
+            <input type="file" id="images" name="images" accept="image/*" multiple>
+            <div id="previewContainer" class="preview-container"></div>
+          </div>
+        </div>
 
-            document.getElementById("msgList").innerHTML = html || "暂无留言，快来抢沙发！";
-        }
+        <button type="submit" id="submitBtn">
+          <span class="btn-text">提交留言</span>
+          <span class="btn-loading" style="display:none">提交中...</span>
+        </button>
+      </form>
+    </section>
 
-        // 提交留言
-        function sendMsg() {
-            let name = document.getElementById("name").value.trim();
-            let content = document.getElementById("content").value.trim();
+    <!-- 留言列表 -->
+    <section class="messages-section">
+      <div class="messages-header">
+        <h2>留言列表 <span id="messageCount">(0)</span></h2>
+        <button id="refreshBtn" class="btn-refresh">🔄 刷新</button>
+      </div>
 
-            if (!name || !content) {
-                alert("昵称和留言内容都不能为空！");
-                return;
-            }
+      <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <span>加载中...</span>
+      </div>
 
-            // 构造留言数据
-            let msg = {
-                name: name,
-                content: content,
-                time: new Date().toLocaleString()
-            };
+      <div id="messagesList" class="messages-list">
+        <!-- 留言将通过JS动态加载 -->
+      </div>
 
-            // 读取历史 + 新增
-            let msgs = JSON.parse(localStorage.getItem("momaMessages") || "[]");
-            msgs.push(msg);
-            localStorage.setItem("momaMessages", JSON.stringify(msgs));
+      <div id="pagination" class="pagination">
+        <!-- 分页按钮将通过JS动态生成 -->
+      </div>
+    </section>
+  </div>
 
-            alert("留言成功！");
-            document.getElementById("content").value = "";
-            getMessages();
-        }
-    </script>
+  <!-- Toast 通知 -->
+  <div id="toast" class="toast"></div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
